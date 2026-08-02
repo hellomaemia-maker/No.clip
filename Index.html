@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Noclip Finder - Terminal Ontológica</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    :root {
+      --bg-color: #080808;
+      --accent-color: #00ff66;
+      --warning-color: #ff3333;
+      --font-stack: 'Courier New', Courier, monospace;
+    }
+
+    body, html {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background-color: var(--bg-color);
+      color: var(--accent-color);
+      font-family: var(--font-stack);
+      overflow: hidden;
+    }
+
+    #map {
+      width: 100%;
+      height: 60vh;
+      filter: invert(100%) hue-rotate(180deg) contrast(120%);
+    }
+
+    .ui-panel {
+      height: 40vh;
+      padding: 15px;
+      box-sizing: border-box;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      border-top: 2px solid var(--accent-color);
+      background: radial-gradient(circle, #111 0%, #050505 100%);
+    }
+
+    .status-box {
+      font-size: 0.85rem;
+      line-height: 1.4;
+      border: 1px dashed var(--accent-color);
+      padding: 10px;
+      background: rgba(0, 255, 102, 0.05);
+      max-height: 140px;
+      overflow-y: auto;
+    }
+
+    .btn {
+      background: transparent;
+      border: 1px solid var(--accent-color);
+      color: var(--accent-color);
+      padding: 12px;
+      font-family: var(--font-stack);
+      font-weight: bold;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: all 0.2s;
+      width: 100%;
+    }
+
+    .btn:active {
+      background: var(--accent-color);
+      color: var(--bg-color);
+    }
+
+    .btn-warning {
+      border-color: var(--warning-color);
+      color: var(--warning-color);
+      animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(255, 51, 51, 0.4); }
+      70% { box-shadow: 0 0 0 10px rgba(255, 51, 51, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(255, 51, 51, 0); }
+    }
+
+    /* Modal de Cámara VHS */
+    #vhsOverlay {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100vw;
+      height: 100vh;
+      background: #000;
+      z-index: 9999;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #vhsCanvas {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .vhs-controls {
+      position: absolute;
+      bottom: 30px;
+      left: 0;
+      width: 100%;
+      display: flex;
+      justify-content: space-around;
+      padding: 0 20px;
+      box-sizing: border-box;
+    }
+
+    .vhs-btn {
+      background: rgba(0,0,0,0.7);
+      border: 1px solid var(--accent-color);
+      color: var(--accent-color);
+      padding: 10px 15px;
+      font-family: var(--font-stack);
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="map"></div>
+
+  <div class="ui-panel">
+    <div class="status-box" id="status">
+      [SISTEMA LISTO]<br>
+      Iniciando escáner ontológico...
+    </div>
+
+    <button class="btn" id="scanBtn" onclick="generarPuntoLiminal()">Buscar Punto de Noclip</button>
+    <button class="btn btn-warning" id="cameraBtn" style="display:none;" onclick="abrirVisorVHS()">📷 Abrir Visor Liminal</button>
+  </div>
+
+  <div id="vhsOverlay">
+    <video id="vhsVideo" autoplay playsinline style="display:none;"></video>
+    <canvas id="vhsCanvas"></canvas>
+    <div class="vhs-controls">
+      <button class="vhs-btn" onclick="capturarEvidencia()">[ 🔴 REGISTRAR CLIP ]</button>
+      <button class="vhs-btn" style="border-color:#ff3333; color:#ff3333;" onclick="cerrarVisorVHS()">[ CERRAR ]</button>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    let map, userMarker, anomalyMarker;
+    let userPos = null;
+    let anomalyPos = null;
+    let estabilidadActual = 0;
+    let vhsStream = null;
+    let animationFrameId = null;
+
+    window.onload = () => {
+      map = L.map('map').setView([0, 0], 15);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: 'OSM / Ontological Radar'
+      }).addTo(map);
+
+      iniciarGeolocalizacion();
+    };
+
+    function iniciarGeolocalizacion() {
+      if ('geolocation' in navigator) {
+        const opcionesGPS = { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 };
+        navigator.geolocation.watchPosition(
+          (pos) => {
+            userPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+            if (!userMarker) {
+              map.setView([userPos.lat, userPos.lng], 16);
+              userMarker = L.circleMarker([userPos.lat, userPos.lng], { color: '#00ff66', radius: 8 }).addTo(map).bindPopup("Tu Presencia");
+            } else {
+              userMarker.setLatLng([userPos.lat, userPos.lng]);
+            }
+            actualizarDistancia();
+          },
+          (err) => manejarErrorGPS(err),
+          opcionesGPS
+        );
+      } else {
+        document.getElementById('status').innerText = "[ERROR]: Tu navegador no soporta la API de Geolocalización.";
+      }
+    }
+
+    function manejarErrorGPS(err) {
+      let mensaje = "[ERROR GPS]: ";
+      switch(err.code) {
+        case err.PERMISSION_DENIED: mensaje += "Permiso de ubicación denegado."; break;
+        case err.POSITION_UNAVAILABLE: mensaje += "Señal de GPS no disponible."; break;
+        case err.TIMEOUT: mensaje += "Tiempo de espera agotado al obtener GPS."; break;
+        default: mensaje += "Error de ubicación.";
+      }
+
+      if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        mensaje += `<br><span style="color:var(--warning-color)">⚠ Requiere HTTPS para geolocalización.</span>`;
+      }
+      mensaje += `<br><button class="btn" style="padding:4px; margin-top:5px; font-size:0.75rem;" onclick="usarUbicacionPrueba()">Ubicación de Prueba</button>`;
+      document.getElementById('status').innerHTML = mensaje;
+    }
+
+    function usarUbicacionPrueba() {
+      userPos = { lat: 41.5550, lng: 2.1000 };
+      if (!userMarker) {
+        map.setView([userPos.lat, userPos.lng], 16);
+        userMarker = L.circleMarker([userPos.lat, userPos.lng], { color: '#00ff66', radius: 8 }).addTo(map);
+      }
+      document.getElementById('status').innerHTML = `[MODO PRUEBA ACTIVADO]<br>Coordenadas cargadas.`;
+    }
+
+    function generarPuntoLiminal() {
+      if (!userPos) return;
+
+      const radio = 0.002 + Math.random() * 0.003; 
+      const angulo = Math.random() * Math.PI * 2;
+      anomalyPos = { lat: userPos.lat + (radio * Math.cos(angulo)), lng: userPos.lng + (radio * Math.sin(angulo)) };
+      estabilidadActual = (Math.random() * 30 + 5).toFixed(1);
+
+      if (anomalyMarker) map.removeLayer(anomalyMarker);
+      anomalyMarker = L.marker([anomalyPos.lat, anomalyPos.lng]).addTo(map)
+        .bindPopup(`Brecha Estabilidad: ${estabilidadActual}%`).openPopup();
+
+      actualizarDistancia();
+    }
+
+    function calcularDistancia(lat1, lon1, lat2, lon2) {
+      const R = 6371000;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon/2) * Math.sin(dLon/2);
+      return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+    }
+
+    function actualizarDistancia() {
+      if (!userPos || !anomalyPos) return;
+      const dist = Math.round(calcularDistancia(userPos.lat, userPos.lng, anomalyPos.lat, anomalyPos.lng));
+      const scanBtn = document.getElementById('scanBtn');
+      const cameraBtn = document.getElementById('cameraBtn');
+
+      if (dist <= 20) {
+        document.getElementById('status').innerHTML = `[ANOMALÍA DETECTADA]<br>Distancia: <b>${dist}m</b><br><span style="color:var(--warning-color)">Inestabilidad alta. Preparado para noclip.</span>`;
+        cameraBtn.style.display = 'block';
+        scanBtn.style.display = 'none';
+      } else {
+        document.getElementById('status').innerHTML = `[PUNTO NOCLIP FIJADO]<br>Estabilidad: ${estabilidadActual}%<br>Distancia al objetivo: ${dist}m`;
+        cameraBtn.style.display = 'none';
+        scanBtn.style.display = 'block';
+      }
+    }
+
+    /* --- MOTOR DE CÁMARA VHS Y EFECTOS EN CANVAS --- */
+
+    async function abrirVisorVHS() {
+      const overlay = document.getElementById('vhsOverlay');
+      const video = document.getElementById('vhsVideo');
+      overlay.style.display = 'flex';
+
+      try {
+        vhsStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: "environment" } },
+          audio: false
+        });
+        video.srcObject = vhsStream;
+        video.play();
+        requestAnimationFrame(renderVHS);
+      } catch (err) {
+        alert("No se pudo acceder a la cámara: " + err.message);
+        cerrarVisorVHS();
+      }
+    }
+
+    function cerrarVisorVHS() {
+      if (vhsStream) {
+        vhsStream.getTracks().forEach(track => track.stop());
+      }
+      if (animationFrameId) {
+        cancelAnimationFrame(animationFrameId);
+      }
+      document.getElementById('vhsOverlay').style.display = 'none';
+    }
+
+    function renderVHS() {
+      const video = document.getElementById('vhsVideo');
+      const canvas = document.getElementById('vhsCanvas');
+      const ctx = canvas.getContext('2d');
+
+      if (video.readyState === video.HAVE_ENOUGH_DATA) {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // 1. Dibujar frame base del video
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        // 2. Glitch de desfase horizontal (Random Slicing)
+        if (Math.random() < 0.3) {
+          const sliceY = Math.random() * canvas.height;
+          const sliceHeight = Math.random() * 20 + 5;
+          const sliceOffset = (Math.random() - 0.5) * 30;
+          ctx.drawImage(canvas, 0, sliceY, canvas.width, sliceHeight, sliceOffset, sliceY, canvas.width, sliceHeight);
+        }
+
+        // 3. Aberración Cromática (Canal Rojo desplazado)
+        if (Math.random() < 0.5) {
+          ctx.save();
+          ctx.globalCompositeOperation = 'screen';
+          ctx.fillStyle = 'rgba(255,0,0,0.15)';
+          ctx.fillRect(5, 0, canvas.width, canvas.height);
+          ctx.restore();
+        }
+
+        // 4. Ruido blanco / Granulado VHS
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const pixels = imgData.data;
+        for (let i = 0; i < pixels.length; i += 16) {
+          const noise = (Math.random() - 0.5) * 40;
+          pixels[i] = Math.min(255, Math.max(0, pixels[i] + noise));     // R
+          pixels[i+1] = Math.min(255, Math.max(0, pixels[i+1] + noise)); // G
+          pixels[i+2] = Math.min(255, Math.max(0, pixels[i+2] + noise)); // B
+        }
+        ctx.putImageData(imgData, 0, 0);
+
+        // 5. Scanlines (CRT Overlay)
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+        for (let y = 0; y < canvas.height; y += 4) {
+          ctx.fillRect(0, y, canvas.width, 2);
+        }
+
+        // 6. Texto e Interfaz VHS
+        const ahora = new Date();
+        const timestamp = ahora.toLocaleDateString() + ' ' + ahora.toLocaleTimeString();
+
+        ctx.font = '20px "Courier New", monospace';
+        ctx.fillStyle = '#00ff66';
+        ctx.shadowColor = '#00ff66';
+        ctx.shadowBlur = 5;
+
+        ctx.fillText('PLAY ▮▮', 30, 40);
+        ctx.fillText(`REALITY STABILITY: ${estabilidadActual}%`, 30, 70);
+
+        ctx.fillStyle = '#ff3333';
+        ctx.shadowColor = '#ff3333';
+        ctx.fillText('REC ⚫', canvas.width - 120, 40);
+
+        ctx.fillStyle = '#ffffff';
+        ctx.shadowColor = '#000000';
+        ctx.fillText(timestamp, 30, canvas.height - 80);
+        ctx.fillText('NOCLIP ZONE // BORDERLAND', 30, canvas.height - 55);
+      }
+
+      animationFrameId = requestAnimationFrame(renderVHS);
+    }
+
+    function capturarEvidencia() {
+      const canvas = document.getElementById('vhsCanvas');
+      const foto = canvas.toDataURL('image/png');
+      
+      // Descarga automática del log fotográfico
+      const link = document.createElement('a');
+      link.download = `noclip_log_${Date.now()}.png`;
+      link.href = foto;
+      link.click();
+
+      alert("Anomalía registrada. Brecha ontológica almacenada en memoria local.");
+      cerrarVisorVHS();
+    }
+  </script>
+</body>
+</html>
